@@ -535,14 +535,14 @@ function UpdateBookingBody({ booking, onSave, deleteBooking }) {
     if (!booking) return;
     setNotes(booking.notes ?? DEFAULT_NOTES);
     setNotesError("");
-  }, [booking?.id]);
+  }, [booking]);
 
   if (!booking) return null;
 
   const handleSave = () => {
     const trimmed = notes.trim();
-    if (trimmed.length < 10) {
-      setNotesError("Notes must be at least 10 characters.");
+    if (trimmed.length < 1) {
+      setNotesError("Notes must be at least 1 characters.");
       showToast("Please fix validation errors", "error");
       return;
     }

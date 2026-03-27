@@ -46,10 +46,10 @@ export const AppointmentBlock = memo(function AppointmentBlock({
         onClick?.(booking);
       }}
       className="absolute left-1 right-1 z-10 overflow-hidden rounded-md border border-black/[0.06] p-2 text-left transition-[box-shadow] hover:z-20 focus:outline-none focus:ring-2 focus:ring-[#D4AF37]/50"
-      style={style}
+      style={style} 
     >
       <div className="text-[11px] font-bold leading-snug text-[#111827]">
-        {booking.service}
+        {booking.durationMin} Min /  {booking.service}
       </div>
       <div className="mt-0.5 text-[10px] font-semibold text-[#374151]">
         {booking.clientPhone}

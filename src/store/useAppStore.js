@@ -29,12 +29,14 @@ function readCache() {
 function saveCache(bookings) {
   try {
     localStorage.setItem(CACHE_KEY, JSON.stringify(bookings));
-  } catch {}
+  } catch {
+    // Ignore cache write failures (private mode/quota issues).
+  }
 }
 
 export const useAppStore = create((set) => ({
   searchQuery: "",
-  selectedDate: new Date(2025, 7, 16),
+  selectedDate: new Date(),
   displayIntervalLabel: "15 Min",
 
   /** @type {'home' | 'therapists' | 'sales' | 'clients' | 'transactions' | 'reports'} */
@@ -260,36 +262,70 @@ export const useAppStore = create((set) => ({
     logger.action("booking.move", { id, patch });
   },
 
-  checkInBooking: (id) => {
+  checkInBooking: async (id) => {
+    const ref = String(id);
     set((s) => {
+      const selected = s.bookings.find((b) => b.id === ref);
+      const targetBookingId = String(selected?.bookingId ?? selected?.id ?? ref);
       const next = s.bookings.map((b) =>
-        b.id === id ? { ...b, status: "checkIn" } : b,
+        String(b.bookingId ?? b.id) === targetBookingId
+          ? { ...b, status: "checkIn" }
+          : b,
       );
       saveCache(next);
       const sel =
-        s.selectedBooking?.id === id
+        s.selectedBooking?.id === ref
           ? { ...s.selectedBooking, status: "checkIn" }
           : s.selectedBooking;
       return { bookings: next, selectedBooking: sel };
     });
-    logger.action("booking.checkIn", { id });
+    logger.action("booking.checkIn", { id: ref });
+    try {
+      const token = await authService.ensureAuth();
+      const selected = useAppStore.getState().bookings.find((b) => b.id === ref);
+      const apiId = String(selected?.bookingId ?? ref);
+      await bookingService.updateStatus(apiId, "Check-in (In Progress)", token);
+      set({ lastError: "" });
+      logger.info("booking.checkIn.api", { id: apiId });
+    } catch (error) {
+      set({ lastError: "Check-in updated locally (API status update failed)." });
+      logger.error("booking.checkIn.failed", { id: ref, message: error?.message });
+    }
   },
 
-  checkoutBooking: (id) => {
+  checkoutBooking: async (id) => {
+    const ref = String(id);
     set((s) => {
+      const selected = s.bookings.find((b) => b.id === ref);
+      const targetBookingId = String(selected?.bookingId ?? selected?.id ?? ref);
       const next = s.bookings.map((b) =>
-        b.id === id ? { ...b, status: "completed" } : b,
+        String(b.bookingId ?? b.id) === targetBookingId
+          ? { ...b, status: "completed" }
+          : b,
       );
       saveCache(next);
       return {
         bookings: next,
         selectedBooking:
-          s.selectedBooking?.id === id
+          s.selectedBooking?.id === ref
             ? { ...s.selectedBooking, status: "completed" }
             : s.selectedBooking,
       };
     });
-    logger.action("booking.checkout", { id });
+    logger.action("booking.checkout", { id: ref });
+    try {
+      const token = await authService.ensureAuth();
+      const selected = useAppStore.getState().bookings.find((b) => b.id === ref);
+      const apiId = String(selected?.bookingId ?? ref);
+      await bookingService.updateStatus(apiId, "Completed", token);
+      set({ lastError: "" });
+      logger.info("booking.checkout.api", { id: apiId });
+    } catch (error) {
+      set({
+        lastError: "Checkout updated locally (API status update failed).",
+      });
+      logger.error("booking.checkout.failed", { id: ref, message: error?.message });
+    }
   },
 
   setError: (lastError) => set({ lastError }),
@@ -336,8 +372,10 @@ export const useAppStore = create((set) => ({
   },
 
   createBooking: async (draft) => {
+    const tmpId = `tmp-${Date.now()}`;
     const optimistic = {
-      id: `tmp-${Date.now()}`,
+      id: tmpId,
+      bookingId: tmpId,
       therapistId: draft.therapistId ?? THERAPISTS[0].id,
       therapist:
         THERAPISTS.find(
@@ -391,13 +429,14 @@ export const useAppStore = create((set) => ({
     });
     try {
       const token = await authService.ensureAuth();
-      const updated = await bookingService.update(booking.id, booking, token);
+      const apiId = String(booking.bookingId ?? booking.id);
+      const updated = await bookingService.update(apiId, booking, token);
       set((s) => {
         const next = s.bookings.map((b) => (b.id === booking.id ? updated : b));
         saveCache(next);
         return { bookings: next, selectedBooking: updated, lastError: "" };
       });
-      logger.info("booking.updated.api", { id: booking.id });
+      logger.info("booking.updated.api", { id: apiId });
       return updated;
     } catch (error) {
       set({ lastError: "Changes saved locally (API update failed)." });
@@ -410,37 +449,47 @@ export const useAppStore = create((set) => ({
   },
 
   cancelBooking: async (id) => {
+    const ref = String(id);
+    const selected = useAppStore.getState().bookings.find((b) => b.id === ref);
+    const targetBookingId = String(selected?.bookingId ?? ref);
     set((s) => {
       const next = s.bookings.map((b) =>
-        b.id === id ? { ...b, status: "cancelled" } : b,
+        String(b.bookingId ?? b.id) === targetBookingId
+          ? { ...b, status: "cancelled" }
+          : b,
       );
       saveCache(next);
       return { bookings: next };
     });
     try {
       const token = await authService.ensureAuth();
-      await bookingService.cancel(id, {}, token);
+      await bookingService.cancel(targetBookingId, {}, token);
       set({ lastError: "" });
-      logger.info("booking.cancelled.api", { id });
+      logger.info("booking.cancelled.api", { id: targetBookingId });
     } catch (error) {
       set({ lastError: "Booking cancelled locally (API cancel failed)." });
-      logger.error("booking.cancel.failed", { id, message: error?.message });
+      logger.error("booking.cancel.failed", { id: ref, message: error?.message });
     }
   },
 
   deleteBooking: async (id) => {
+    const ref = String(id);
     const previous = useAppStore.getState().bookings;
-    const next = previous.filter((b) => b.id !== id);
+    const selected = previous.find((b) => b.id === ref);
+    const targetBookingId = String(selected?.bookingId ?? ref);
+    const next = previous.filter(
+      (b) => String(b.bookingId ?? b.id) !== targetBookingId,
+    );
     saveCache(next);
     set({ bookings: next, selectedBooking: null, panelMode: "idle" });
     try {
       const token = await authService.ensureAuth();
-      await bookingService.destroy(id, token);
+      await bookingService.destroy(targetBookingId, token);
       set({ lastError: "" });
-      logger.info("booking.deleted.api", { id });
+      logger.info("booking.deleted.api", { id: targetBookingId });
     } catch (error) {
       set({ lastError: "Delete applied locally (API delete failed)." });
-      logger.error("booking.delete.failed", { id, message: error?.message });
+      logger.error("booking.delete.failed", { id: ref, message: error?.message });
     }
   },
 }));

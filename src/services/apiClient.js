@@ -24,7 +24,9 @@ export function getStoredToken() {
     ) {
       return localToken;
     }
-  } catch {}
+  } catch {
+    // Ignore storage access errors and fall back to env token.
+  }
   const envToken = import.meta.env.VITE_API_TOKEN;
   return envToken ?? "";
 }
@@ -33,13 +35,17 @@ export function setStoredToken(token) {
   if (!token || typeof token !== "string") return;
   try {
     localStorage.setItem(TOKEN_KEY, token.trim());
-  } catch {}
+  } catch {
+    // Ignore storage write failures.
+  }
 }
 
 export function clearStoredToken() {
   try {
     localStorage.removeItem(TOKEN_KEY);
-  } catch {}
+  } catch {
+    // Ignore storage remove failures.
+  }
 }
 
 apiClient.interceptors.request.use((config) => {

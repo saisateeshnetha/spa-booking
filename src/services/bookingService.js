@@ -10,6 +10,17 @@ const DEFAULT_CREATED_BY = Number(import.meta.env.VITE_CREATED_BY ?? 229061);
 
 function toMin(value, fallback = 9 * 60) {
   if (!value) return fallback;
+  // Handle plain time strings like "09:30" or "09:30:00"
+  if (typeof value === "string") {
+    const timeOnlyMatch = value.trim().match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+    if (timeOnlyMatch) {
+      const h = Number(timeOnlyMatch[1]);
+      const m = Number(timeOnlyMatch[2]);
+      if (Number.isFinite(h) && Number.isFinite(m)) {
+        return h * 60 + m;
+      }
+    }
+  }
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return fallback;
   return d.getHours() * 60 + d.getMinutes();
@@ -58,46 +69,86 @@ function createBookingItemsPayload(bookingLike) {
       customer_name: customerName,
       primary: 1,
       item_number: 1,
-      room_segments: [],
+      room_segments: [
+        {
+          room_id: 224,
+          item_type: "single-bed",
+          meta_service: null,
+          start_time: toHm(startMin),
+          end_time: toHm(endMin),
+          duration,
+          priority: 1,
+        },
+      ],
     },
   ];
 }
 
-function pickTherapist(raw) {
-  const id = String(
-    raw?.therapist_id ??
-      raw?.therapistId ??
-      raw?.booking_item?.check?.[0]?.therapist_id ??
-      THERAPISTS[0].id,
-  );
-  const therapist = THERAPISTS.find((t) => t.id === id) ?? THERAPISTS[0];
-  return { therapistId: therapist.id, therapist };
+function getBookingItems(raw) {
+  const direct = raw?.booking_item?.check;
+  if (Array.isArray(direct) && direct.length > 0) return direct;
+  const bookingItemObj = raw?.booking_item;
+  if (bookingItemObj && typeof bookingItemObj === "object") {
+    const flattened = [];
+    for (const value of Object.values(bookingItemObj)) {
+      if (Array.isArray(value) && value.length > 0) {
+        flattened.push(...value);
+      }
+    }
+    if (flattened.length > 0) return flattened;
+  }
+  return [];
 }
 
-export function normalizeBooking(raw, idx = 0) {
-  const { therapistId, therapist } = pickTherapist(raw);
+function pickTherapist(raw, bookingItem, idx) {
+  const rawTherapistId = String(
+    raw?.therapist_id ?? raw?.therapistId ?? bookingItem?.therapist_id ?? "",
+  );
+  const knownTherapist = THERAPISTS.find((t) => t.id === rawTherapistId);
+  if (knownTherapist) {
+    return { therapistId: knownTherapist.id, therapist: knownTherapist };
+  }
+  // Map unknown therapist IDs to visible board columns deterministically.
+  const fallback = THERAPISTS[idx % THERAPISTS.length] ?? THERAPISTS[0];
+  return {
+    therapistId: fallback.id,
+    therapist: {
+      ...fallback,
+      name: bookingItem?.therapist ?? raw?.therapist ?? fallback.name,
+    },
+  };
+}
+
+export function normalizeBooking(raw, idx = 0, bookingItem = null) {
+  const item = bookingItem ?? getBookingItems(raw)[0] ?? null;
+  const { therapistId, therapist } = pickTherapist(raw, item, idx);
   const cardKeys = Object.keys(BOOKING_CARD);
   const cardKey = cardKeys[idx % cardKeys.length];
   const durationRaw = Number(
     raw?.duration ??
       raw?.durationMin ??
-      raw?.booking_item?.check?.[0]?.duration ??
+      item?.duration ??
       60,
   );
   const durationMin = Number.isFinite(durationRaw)
     ? Math.max(15, durationRaw)
     : 60;
-  const bookingItem = raw?.booking_item?.check?.[0];
   const startValue =
     raw?.start_time ??
+    item?.start_time ??
     raw?.startAt ??
     raw?.date_time ??
-    bookingItem?.service_at;
+    item?.service_at;
   const serviceName =
-    raw?.service_name ?? raw?.service ?? bookingItem?.service ?? "Service";
+    raw?.service_name ?? raw?.service ?? item?.service ?? "Service";
+  const apiBookingId = String(raw?.id ?? raw?.booking_id ?? `api-${idx + 1}`);
+  const uiId =
+    item?.id != null ? `${apiBookingId}-${String(item.id)}` : apiBookingId;
 
   return {
-    id: String(raw?.id ?? raw?.booking_id ?? `api-${idx + 1}`),
+    id: uiId,
+    bookingId: apiBookingId,
+    bookingItemId: item?.id != null ? String(item.id) : null,
     therapistId,
     therapist,
     startMin: toMin(startValue),
@@ -116,18 +167,17 @@ export function normalizeBooking(raw, idx = 0) {
     cardKey,
     bg: BOOKING_CARD[cardKey]?.bg ?? "#E5E7EB",
     room:
-      raw?.room_name ?? raw?.room ?? bookingItem?.room_items?.[0]?.room_name,
-    requests: raw?.request_type ?? raw?.requests,
+      raw?.room_name ?? raw?.room ?? item?.room_items?.[0]?.room_name,
+    requests: raw?.request_type ?? raw?.requests ?? item?.service_request,
     notes: raw?.notes ?? raw?.note ?? "",
     requestedTherapist: Boolean(
-      bookingItem?.requested_person === 1 ||
-      bookingItem?.requested_person === true,
+      item?.requested_person === 1 ||
+      item?.requested_person === true,
     ),
     requestedRoom: Boolean(
-      bookingItem?.requested_room === 1 ||
-      bookingItem?.requested_room === true ||
-      (Array.isArray(bookingItem?.room_items) &&
-        bookingItem.room_items.length > 0),
+      item?.requested_room === 1 ||
+      item?.requested_room === true ||
+      (Array.isArray(item?.room_items) && item.room_items.length > 0),
     ),
   };
 }
@@ -166,7 +216,13 @@ export const bookingService = {
           (Array.isArray(res.data?.data) && res.data.data) ||
           (Array.isArray(res.data) && res.data) ||
           [];
-        return list.map((r, i) => normalizeBooking(r, i));
+        return list.flatMap((r, i) => {
+          const items = getBookingItems(r);
+          if (items.length === 0) return [normalizeBooking(r, i, null, 0)];
+          return items.map((item, itemIdx) =>
+            normalizeBooking(r, i + itemIdx, item, itemIdx),
+          );
+        });
       } catch (error) {
         lastError = error;
       }
@@ -240,6 +296,18 @@ export const bookingService = {
     form.append("panel", DEFAULT_PANEL);
     await apiClient.post("/bookings/item/cancel", form, { headers });
     return { id, status: "cancelled" };
+  },
+
+  async updateStatus(id, status, token) {
+    const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+    const form = new FormData();
+    form.append("company", String(DEFAULT_COMPANY_ID));
+    form.append("id", String(id));
+    form.append("status", String(status));
+    form.append("panel", DEFAULT_PANEL);
+    form.append("outlet_type", String(DEFAULT_OUTLET_TYPE));
+    await apiClient.post("/bookings/update/payment-status", form, { headers });
+    return { id, status };
   },
 
   async destroy(id, token) {

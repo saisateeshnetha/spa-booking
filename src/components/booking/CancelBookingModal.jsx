@@ -7,6 +7,8 @@ export function CancelBookingModal() {
   const open = useAppStore((s) => s.cancelModalOpen);
   const close = useAppStore((s) => s.closeCancelModal);
   const cancelBooking = useAppStore((s) => s.cancelBooking);
+  const deleteBooking = useAppStore((s) => s.deleteBooking);
+  const closePanel = useAppStore((s) => s.closePanel);
   const selectedBooking = useAppStore((s) => s.selectedBooking);
   const showCancelled = useAppStore((s) => s.showCancelled);
   const [kind, setKind] = useState("normal");
@@ -105,7 +107,9 @@ export function CancelBookingModal() {
                     return;
                   }
                   if (kind === "delete") {
-                    logger.warn("cancel.delete.blocked", {
+                    deleteBooking(selectedBooking.id);
+                    closePanel();
+                    logger.info("booking.deleted", {
                       id: selectedBooking.id,
                     });
                     close();

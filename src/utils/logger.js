@@ -18,7 +18,9 @@ function write(level, event, payload) {
     const current = JSON.parse(sessionStorage.getItem(LOG_KEY) ?? "[]");
     const next = [...current, entry].slice(-MAX_LOG_ITEMS);
     sessionStorage.setItem(LOG_KEY, JSON.stringify(next));
-  } catch {}
+  } catch {
+    // Ignore session storage failures.
+  }
 }
 
 export const logger = {
